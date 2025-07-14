@@ -10,9 +10,18 @@ find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(hydra_msgs REQUIRED)
 find_package(spark_dsg REQUIRED)
+find_package(pose_graph_tools_msgs REQUIRED)
+find_package(kimera_pgmo_ros REQUIRED)
+find_package(PCL REQUIRED COMPONENTS common io)
+find_package(std_srvs REQUIRED)
 
 add_executable(dsg_query_node src/dsg_query_node.cpp)
 add_executable(dsg_path_planner_node src/dsg_path_planner_node.cpp)
+add_executable(dsg_map_node src/dsg_map_node.cpp)
+
+target_link_libraries(dsg_map_node
+  ${PCL_LIBRARIES}
+)
 
 ament_target_dependencies(dsg_path_planner_node
   rclcpp
@@ -24,6 +33,16 @@ ament_target_dependencies(dsg_query_node
   hydra_msgs
   spark_dsg
 )
+ament_target_dependencies(dsg_map_node
+  rclcpp
+  hydra_msgs
+  pose_graph_tools_msgs
+  spark_dsg
+  std_srvs
+  kimera_pgmo_ros
+)
+
+target_include_directories(dsg_map_node PRIVATE ${PCL_INCLUDE_DIRS})
 
 
 if(BUILD_TESTING)
@@ -41,6 +60,7 @@ endif()
 install(TARGETS 
   dsg_query_node
   dsg_path_planner_node
+  dsg_map_node
   DESTINATION lib/${PROJECT_NAME}
 )
 

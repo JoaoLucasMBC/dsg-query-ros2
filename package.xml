@@ -12,7 +12,8 @@
   <depend>rclcpp</depend>
   <depend>hydra_msgs</depend>
   <depend>spark_dsg</depend>
-
+  <depend>pose_graph_tools_msgs</depend>
+  <depend>kimera_pgmo_ros</depend>
 
   <test_depend>ament_lint_auto</test_depend>
   <test_depend>ament_lint_common</test_depend>
