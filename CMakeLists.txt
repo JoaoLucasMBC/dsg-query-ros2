@@ -12,7 +12,7 @@ find_package(hydra_msgs REQUIRED)
 find_package(spark_dsg REQUIRED)
 find_package(pose_graph_tools_msgs REQUIRED)
 find_package(kimera_pgmo_ros REQUIRED)
-find_package(PCL REQUIRED COMPONENTS common io)
+find_package(PCL REQUIRED COMPONENTS common io features)
 find_package(std_srvs REQUIRED)
 
 add_executable(dsg_query_node src/dsg_query_node.cpp)

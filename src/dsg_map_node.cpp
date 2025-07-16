@@ -10,9 +10,8 @@
 #include <pcl/PolygonMesh.h>
 #include <pcl/point_cloud.h>
 #include <pcl/point_types.h>
-#include <pcl/io/pcd_io.h>
 #include <pcl/io/ply_io.h>
-#include <pcl/point_types.h>
+#include <pcl/features/from_meshes.h>
 
 
 class DsgMapServer : public rclcpp::Node {
@@ -54,11 +53,13 @@ private:
 
   void saveDsgCallback(const std::shared_ptr<std_srvs::srv::Empty::Request>,
                      std::shared_ptr<std_srvs::srv::Empty::Response>) {
+    // Extract the mesh from the graph
     const auto& mesh = *graph_->mesh();
-
-    pcl::PointCloud<pcl::PointXYZRGBA> cloud;
+    
+    // Create a point cloud from the mesh's vertices and colors
+    pcl::PointCloud<pcl::PointXYZRGB> cloud;
     for (size_t i = 0; i < mesh.numVertices(); ++i) {
-      pcl::PointXYZRGBA pt;
+      pcl::PointXYZRGB pt;
       const auto& pos = mesh.pos(i);
       pt.x = pos.x();
       pt.y = pos.y();
@@ -69,10 +70,8 @@ private:
         pt.r = c.r;
         pt.g = c.g;
         pt.b = c.b;
-        pt.a = 255;
       } else {
         pt.r = pt.g = pt.b = 255;
-        pt.a = 255;
       }
 
       cloud.points.push_back(pt);
@@ -81,23 +80,54 @@ private:
     cloud.height = 1;
     cloud.is_dense = true;
 
-    // Convert cloud to PCLPointCloud2
-    pcl::PCLPointCloud2 cloud_blob;
-    pcl::toPCLPointCloud2(cloud, cloud_blob);
-
-    // Convert faces
-    pcl::PolygonMesh pcl_mesh;
-    pcl_mesh.cloud = cloud_blob;
+    // Prepare faces (polygons)
+    std::vector<pcl::Vertices> pcl_polygons;
+    pcl_polygons.reserve(mesh.faces.size()); // Pre-allocate memory
     for (const auto& face : mesh.faces) {
-      pcl::Vertices v;
-      v.vertices = {static_cast<uint32_t>(face[0]),
-                    static_cast<uint32_t>(face[1]),
-                    static_cast<uint32_t>(face[2])};
-      pcl_mesh.polygons.push_back(v);
+      if (face.size() == 3) { // Ensure it's a triangle
+        pcl::Vertices v;
+        v.vertices = {static_cast<uint32_t>(face[0]),
+                      static_cast<uint32_t>(face[1]),
+                      static_cast<uint32_t>(face[2])};
+        pcl_polygons.push_back(v);
+      } else {
+          RCLCPP_WARN(this->get_logger(), "Skipping non-triangular face with %zu vertices.", face.size());
+      }
     }
 
-    // Save to PLY or OBJ for Gazebo
-    std::string filename = "/tmp/dsg_mesh.ply";
+    // Compute normals
+    pcl::PointCloud<pcl::Normal>::Ptr normals(new pcl::PointCloud<pcl::Normal>);
+    pcl::features::computeApproximateNormals(cloud, pcl_polygons, *normals);
+
+    // Combine point cloud with normals
+    pcl::PointCloud<pcl::PointXYZRGBNormal>::Ptr cloud_with_normals(new pcl::PointCloud<pcl::PointXYZRGBNormal>);
+    pcl::concatenateFields(cloud, *normals, *cloud_with_normals);
+
+    // Convert cloud to PCLPointCloud2
+    pcl::PCLPointCloud2 cloud_blob;
+    pcl::toPCLPointCloud2(*cloud_with_normals, cloud_blob);
+
+    // Create a PolygonMesh to hold the cloud and polygons
+    pcl::PolygonMesh pcl_mesh;
+    pcl_mesh.cloud = cloud_blob;
+    pcl_mesh.polygons = pcl_polygons;
+
+    // Check for NaN normals (uncomment if needed)
+    // int nan_count = 0;
+    // for (size_t i = 0; i < normals->points.size(); ++i) {
+    //   const auto& n = normals->points[i];
+    //   if (!pcl::isFinite(n)) {
+    //     ++nan_count;
+    //     // Optionally replace with a default direction
+    //     normals->points[i].normal_x = 0.0f;
+    //     normals->points[i].normal_y = 0.0f;
+    //     normals->points[i].normal_z = 1.0f;
+    //   }
+    // }
+    // RCLCPP_WARN(this->get_logger(), "Found %d NaN normals out of %lu points", nan_count, normals->points.size());
+
+    // Save to PLY
+    std::string filename = "/tmp/dsg_mesh_normals.ply";
     pcl::io::savePLYFileBinary(filename, pcl_mesh);
 
     RCLCPP_INFO(this->get_logger(), "Saved mesh to %s", filename.c_str());
