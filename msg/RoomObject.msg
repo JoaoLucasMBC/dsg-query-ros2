@@ -1,0 +1,2 @@
+uint64 object_id
+uint64 room_id

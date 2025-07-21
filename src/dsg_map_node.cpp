@@ -6,6 +6,10 @@
 #include "spark_dsg/mesh.h"
 
 #include "std_srvs/srv/empty.hpp"
+#include "dsg_query/srv/list_rooms.hpp"
+#include "dsg_query/srv/list_room_objects.hpp"
+#include "dsg_query/msg/room.hpp"
+#include "dsg_query/msg/room_object.hpp"
 
 #include <pcl/PolygonMesh.h>
 #include <pcl/point_cloud.h>
@@ -13,6 +17,19 @@
 #include <pcl/io/ply_io.h>
 #include <pcl/features/from_meshes.h>
 
+#include "dsg_query/pcl_mesh_to_assimp.h"
+#include <assimp/scene.h>
+#include <assimp/Exporter.hpp>
+#include <assimp/Importer.hpp>
+#include <assimp/material.h>
+
+#include <cstdio>
+#include <filesystem> 
+
+using Room = dsg_query::msg::Room;
+using RoomObject = dsg_query::msg::RoomObject;
+using ListRooms = dsg_query::srv::ListRooms;
+using ListRoomObjects = dsg_query::srv::ListRoomObjects;
 
 class DsgMapServer : public rclcpp::Node {
 public:
@@ -32,6 +49,16 @@ public:
     save_dsg_service_ = this->create_service<std_srvs::srv::Empty>(
       "/hydra/backend/save_dsg",
       std::bind(&DsgMapServer::saveDsgCallback, this, std::placeholders::_1, std::placeholders::_2));
+    
+    // Create a service for listing the rooms
+    list_rooms_service_ = this->create_service<ListRooms>(
+      "/hydra/backend/rooms",
+      std::bind(&DsgMapServer::listRoomsCallback, this, std::placeholders::_1, std::placeholders::_2));
+
+    // Create a service to list all objects in a given room
+    list_objects_service_ = this->create_service<ListRoomObjects>(
+      "/hydra/backend/objects",
+      std::bind(&DsgMapServer::listObjectsCallback, this, std::placeholders::_1, std::placeholders::_2));
   }
       
 private:
@@ -99,6 +126,12 @@ private:
     pcl::PointCloud<pcl::Normal>::Ptr normals(new pcl::PointCloud<pcl::Normal>);
     pcl::features::computeApproximateNormals(cloud, pcl_polygons, *normals);
 
+    for (auto &n : normals->points) {
+      n.normal_x *= -1.0f;
+      n.normal_y *= -1.0f;
+      n.normal_z *= -1.0f;
+    }
+
     // Combine point cloud with normals
     pcl::PointCloud<pcl::PointXYZRGBNormal>::Ptr cloud_with_normals(new pcl::PointCloud<pcl::PointXYZRGBNormal>);
     pcl::concatenateFields(cloud, *normals, *cloud_with_normals);
@@ -112,31 +145,78 @@ private:
     pcl_mesh.cloud = cloud_blob;
     pcl_mesh.polygons = pcl_polygons;
 
-    // Check for NaN normals (uncomment if needed)
-    // int nan_count = 0;
-    // for (size_t i = 0; i < normals->points.size(); ++i) {
-    //   const auto& n = normals->points[i];
-    //   if (!pcl::isFinite(n)) {
-    //     ++nan_count;
-    //     // Optionally replace with a default direction
-    //     normals->points[i].normal_x = 0.0f;
-    //     normals->points[i].normal_y = 0.0f;
-    //     normals->points[i].normal_z = 1.0f;
-    //   }
-    // }
-    // RCLCPP_WARN(this->get_logger(), "Found %d NaN normals out of %lu points", nan_count, normals->points.size());
 
-    // Save to PLY
-    std::string filename = "/tmp/dsg_mesh_normals.ply";
-    pcl::io::savePLYFileBinary(filename, pcl_mesh);
+    // Save to PLY in a temporary file
+    // std::string tmpl = "/tmp/dsg_mesh.ply";
+    
+    // pcl::io::savePLYFileBinary(tmpl, pcl_mesh);
+    // RCLCPP_INFO(this->get_logger(), "Saved temp mesh to %s", tmpl.c_str());
 
-    RCLCPP_INFO(this->get_logger(), "Saved mesh to %s", filename.c_str());
+    // PclMeshToAssimpConverter::convertPLYToAssimp(tmpl, "/tmp/mesh.dae");
+
+    // Convert PCL mesh to Assimp scene
+    aiScene* scene = PclMeshToAssimpConverter::createAssimpSceneFromPolygonMesh(pcl_mesh);
+    
+    if (!scene) {
+      RCLCPP_ERROR(this->get_logger(), "Failed to convert PCL mesh to Assimp scene.");
+      return;
+    }
+
+    // Export the Assimp scene to OBJ format
+    std::string output_file = "/tmp/dsg_mesh.obj";
+    if (PclMeshToAssimpConverter::exportAssimpScene(scene, "obj", output_file)) {
+      RCLCPP_INFO(this->get_logger(), "Successfully exported DSG mesh to %s", output_file.c_str());
+    } else {
+      RCLCPP_ERROR(this->get_logger(), "Failed to export DSG mesh to OBJ format.");
+    }
+
+    //std::remove(tmpl.c_str());
+  }
+
+  void listRoomsCallback(
+      const std::shared_ptr<ListRooms::Request>,
+      std::shared_ptr<ListRooms::Response> response) {
+    // List all rooms in the DSG
+    auto rooms = graph_->findLayer("ROOMS");
+
+    for (const auto& [id, node_ptr] : rooms->nodes()) {
+      const auto& node = *node_ptr;
+      Room room_msg;
+      room_msg.room_id = node.id;
+      response->rooms.push_back(room_msg);
+    }
+  }
+
+  void listObjectsCallback(
+      const std::shared_ptr<ListRoomObjects::Request> request,
+      std::shared_ptr<ListRoomObjects::Response> response) {
+    
+    // List all objects in a given room
+    auto objects = graph_->findLayer("OBJECTS");
+    for (const auto& [id, node_ptr] : objects->nodes()) {
+      const auto& node = *node_ptr;
+
+      auto place = node.getParent();
+      auto& place_node = graph_->getNode(*place);
+
+      auto room = place_node.getParent();
+      auto& room_node = graph_->getNode(*room);
+
+      if (room_node.id == request->room.room_id) {
+        RoomObject object_msg;
+        object_msg.object_id = node.id;
+        object_msg.room_id = room_node.id;
+        response->objects.push_back(object_msg);
+      }
+    }
   }
 
   std::shared_ptr<spark_dsg::DynamicSceneGraph> graph_;
   std::shared_ptr<pcl::PolygonMesh> mesh_;
   rclcpp::Subscription<hydra_msgs::msg::DsgUpdate>::SharedPtr dsg_update_subscriber_;
   rclcpp::Service<std_srvs::srv::Empty>::SharedPtr save_dsg_service_;
+  rclcpp::Service<ListRooms>::SharedPtr list_rooms_service_;
+  rclcpp::Service<ListRoomObjects>::SharedPtr list_objects_service_;
 };
 
 int main(int argc, char** argv) {

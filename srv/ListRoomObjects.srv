@@ -1,0 +1,4 @@
+# client passes you a full Room
+dsg_query/Room room
+---
+dsg_query/RoomObject[] objects

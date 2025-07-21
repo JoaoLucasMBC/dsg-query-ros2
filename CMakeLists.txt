@@ -14,20 +14,43 @@ find_package(pose_graph_tools_msgs REQUIRED)
 find_package(kimera_pgmo_ros REQUIRED)
 find_package(PCL REQUIRED COMPONENTS common io features)
 find_package(std_srvs REQUIRED)
+find_package(assimp REQUIRED) 
+find_package(rosidl_default_generators REQUIRED)
+
+add_library(pcl_mesh_to_assimp_lib
+  src/pcl_mesh_to_assimp.cpp
+)
+
+# Set include directories for the library itself
+target_include_directories(pcl_mesh_to_assimp_lib PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include/${PROJECT_NAME}>
+  # PCL and Assimp headers are implicitly handled via target_link_libraries
+)
+
+# Link the utility library to its direct dependencies (PCL and Assimp)
+target_link_libraries(pcl_mesh_to_assimp_lib
+  ${PCL_LIBRARIES}
+  assimp::assimp # Correct way to link Assimp from find_package
+)
+
+# Include the custom srv
+rosidl_generate_interfaces(${PROJECT_NAME}
+  "msg/Room.msg"
+  "msg/RoomObject.msg"
+  "srv/ListRooms.srv"
+  "srv/ListRoomObjects.srv"
+)
 
 add_executable(dsg_query_node src/dsg_query_node.cpp)
-add_executable(dsg_path_planner_node src/dsg_path_planner_node.cpp)
 add_executable(dsg_map_node src/dsg_map_node.cpp)
 
 target_link_libraries(dsg_map_node
+  pcl_mesh_to_assimp_lib
   ${PCL_LIBRARIES}
+  assimp::assimp
 )
 
-ament_target_dependencies(dsg_path_planner_node
-  rclcpp
-  hydra_msgs
-  spark_dsg
-)
 ament_target_dependencies(dsg_query_node
   rclcpp
   hydra_msgs
@@ -57,11 +80,19 @@ if(BUILD_TESTING)
   ament_lint_auto_find_test_dependencies()
 endif()
 
+rosidl_target_interfaces(dsg_map_node
+  ${PROJECT_NAME} "rosidl_typesupport_cpp")
+
 install(TARGETS 
   dsg_query_node
-  dsg_path_planner_node
   dsg_map_node
+  pcl_mesh_to_assimp_lib
   DESTINATION lib/${PROJECT_NAME}
+)
+
+install(DIRECTORY include/
+  DESTINATION include/
+  FILES_MATCHING PATTERN "*.h"
 )
 
 ament_package()
