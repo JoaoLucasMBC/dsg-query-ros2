@@ -14,6 +14,8 @@
   <depend>spark_dsg</depend>
   <depend>pose_graph_tools_msgs</depend>
   <depend>kimera_pgmo_ros</depend>
+  <depend>nav2_msgs</depend>
+  <depend>geometry_msgs</depend>
 
   <build_depend>assimp</build_depend>
   <exec_depend>assimp</exec_depend>

@@ -16,6 +16,8 @@ find_package(PCL REQUIRED COMPONENTS common io features)
 find_package(std_srvs REQUIRED)
 find_package(assimp REQUIRED) 
 find_package(rosidl_default_generators REQUIRED)
+find_package(nav2_msgs REQUIRED)
+find_package(geometry_msgs REQUIRED)
 
 add_library(pcl_mesh_to_assimp_lib
   src/pcl_mesh_to_assimp.cpp
@@ -40,6 +42,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/RoomObject.msg"
   "srv/ListRooms.srv"
   "srv/ListRoomObjects.srv"
+  "srv/MoveToObject.srv"
 )
 
 add_executable(dsg_query_node src/dsg_query_node.cpp)
@@ -63,6 +66,8 @@ ament_target_dependencies(dsg_map_node
   spark_dsg
   std_srvs
   kimera_pgmo_ros
+  nav2_msgs
+  geometry_msgs
 )
 
 target_include_directories(dsg_map_node PRIVATE ${PCL_INCLUDE_DIRS})
