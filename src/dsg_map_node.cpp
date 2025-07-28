@@ -7,6 +7,7 @@
 #include "spark_dsg/mesh.h"
 
 #include "std_srvs/srv/empty.hpp"
+#include "std_srvs/srv/trigger.hpp"
 #include "dsg_query/srv/list_rooms.hpp"
 #include "dsg_query/srv/list_room_objects.hpp"
 #include "dsg_query/srv/move_to_object.hpp"
@@ -29,6 +30,7 @@
 #include <cstdio>
 #include <filesystem>
 #include <chrono>
+#include <fstream>
 
 #include "nav2_msgs/action/navigate_to_pose.hpp"
 #include "geometry_msgs/msg/pose_stamped.hpp"
@@ -60,11 +62,21 @@ public:
     save_dsg_service_ = this->create_service<std_srvs::srv::Empty>(
       "/hydra/backend/save_dsg",
       std::bind(&DsgMapServer::saveDsgCallback, this, std::placeholders::_1, std::placeholders::_2));
+
+    // Create a service for loading the DSG
+    load_dsg_service_ = this->create_service<std_srvs::srv::Trigger>(
+      "/hydra/backend/load_dsg",
+      std::bind(&DsgMapServer::loadDsgCallback, this, std::placeholders::_1, std::placeholders::_2));
     
     // Create a service for listing the rooms
     list_rooms_service_ = this->create_service<ListRooms>(
       "/hydra/backend/rooms",
       std::bind(&DsgMapServer::listRoomsCallback, this, std::placeholders::_1, std::placeholders::_2));
+
+    // Create a service to list all objects in the DSG
+    list_all_objects_service_ = this->create_service<ListRoomObjects>(
+      "/hydra/backend/all_objects",
+      std::bind(&DsgMapServer::listAllObjectsCallback, this, std::placeholders::_1, std::placeholders::_2));
 
     // Create a service to list all objects in a given room
     list_objects_service_ = this->create_service<ListRoomObjects>(
@@ -97,8 +109,53 @@ private:
                 graph_->numNodes(), graph_->numEdges());
   }
 
+  bool loadDsgCallback(const std_srvs::srv::Trigger::Request::SharedPtr request,
+                     std_srvs::srv::Trigger::Response::SharedPtr response) {
+    std::ifstream input("graph.bin", std::ios::binary);
+    if (!input.is_open()) {
+      response->success = false;
+      response->message = "Failed to open file for reading.";
+      return true;
+    }
+
+    std::vector<uint8_t> buffer((std::istreambuf_iterator<char>(input)),
+                                std::istreambuf_iterator<char>());
+
+    input.close();
+
+    auto graph = std::make_shared<spark_dsg::DynamicSceneGraph>();
+    try {
+      graph = spark_dsg::io::binary::readGraph(buffer.data(), buffer.size());
+      response->success = true;
+      response->message = "Graph loaded successfully.";
+    } catch (const std::exception& e) {
+      response->success = false;
+      response->message = std::string("Failed to read graph: ") + e.what();
+    }
+
+    // Update the internal graph
+    graph_ = graph;
+
+    return true;
+  }
+
   void saveDsgCallback(const std::shared_ptr<std_srvs::srv::Empty::Request>,
                      std::shared_ptr<std_srvs::srv::Empty::Response>) {
+
+    // Save the DSG to a file    
+    std::vector<uint8_t> buffer;
+    spark_dsg::io::binary::writeGraph(*graph_, buffer, /*include_mesh=*/true);
+
+    std::ofstream output("graph.bin", std::ios::binary);
+    if (output.is_open()) {
+      output.write(reinterpret_cast<const char*>(buffer.data()), buffer.size());
+      output.close();
+    } else {
+      std::cerr << "Failed to open file for writing.\n";
+    }
+
+    RCLCPP_INFO(this->get_logger(), "DSG saved to graph.bin");
+
     // Extract the mesh from the graph
     const auto& mesh = *graph_->mesh();
     
@@ -213,17 +270,27 @@ private:
     // List all objects in a given room
     auto objects = graph_->findLayer("OBJECTS");
     for (const auto& [id, node_ptr] : objects->nodes()) {
+
       const auto& node = *node_ptr;
-
       auto place = node.getParent();
-      auto& place_node = graph_->getNode(*place);
 
+      if (!graph_->hasNode(*place)) {
+        RCLCPP_WARN(this->get_logger(), "Object %ld has no parent place", node.id);
+        continue;
+      }
+
+      auto& place_node = graph_->getNode(*place);
       auto room = place_node.getParent();
+      
+      if (!graph_->hasNode(*room)) {
+        RCLCPP_WARN(this->get_logger(), "Place %ld has no parent room", place_node.id);
+        continue;
+      }
+
       auto& room_node = graph_->getNode(*room);
 
       if (room_node.id == request->room.room_id) {
         const auto attrs = node.attributes<spark_dsg::SemanticNodeAttributes>();
-
         RoomObject object_msg;
         object_msg.object_id = node.id;
         object_msg.semantic_label = attrs.semantic_label;
@@ -233,6 +300,26 @@ private:
         object_msg.z = attrs.position.z();
         response->objects.push_back(object_msg);
       }
+    }
+  }
+
+  void listAllObjectsCallback(
+      const std::shared_ptr<ListRoomObjects::Request>,
+      std::shared_ptr<ListRoomObjects::Response> response) {
+    
+    // List all objects in the DSG
+    auto objects = graph_->findLayer("OBJECTS");
+
+    for (const auto& [id, node_ptr] : objects->nodes()) {
+      const auto& node = *node_ptr;
+      const auto attrs = node.attributes<spark_dsg::SemanticNodeAttributes>();
+      RoomObject object_msg;
+      object_msg.object_id = node.id;
+      object_msg.semantic_label = attrs.semantic_label;
+      object_msg.x = attrs.position.x();
+      object_msg.y = attrs.position.y();
+      object_msg.z = attrs.position.z();
+      response->objects.push_back(object_msg);
     }
   }
 
@@ -309,9 +396,9 @@ private:
     const auto attrs = object_node.attributes<spark_dsg::SemanticNodeAttributes>();
     geometry_msgs::msg::PoseStamped goal_pose;
     goal_pose.header.frame_id = "map";
-    goal_pose.pose.position.x = attrs.position.x();
-    goal_pose.pose.position.y = attrs.position.y();
-    goal_pose.pose.position.z = attrs.position.z();
+    goal_pose.pose.position.x = attrs.position.x() - (-10.0);
+    goal_pose.pose.position.y = attrs.position.y() - (30.0);
+    //goal_pose.pose.position.z = attrs.position.z();
     goal_pose.pose.orientation.w = 1.0;
 
     sendGoal(goal_pose);
@@ -319,9 +406,13 @@ private:
 
   std::shared_ptr<spark_dsg::DynamicSceneGraph> graph_;
   std::shared_ptr<pcl::PolygonMesh> mesh_;
+
   rclcpp::Subscription<hydra_msgs::msg::DsgUpdate>::SharedPtr dsg_update_subscriber_;
   rclcpp::Service<std_srvs::srv::Empty>::SharedPtr save_dsg_service_;
+  rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr load_dsg_service_;
+
   rclcpp::Service<ListRooms>::SharedPtr list_rooms_service_;
+  rclcpp::Service<ListRoomObjects>::SharedPtr list_all_objects_service_;
   rclcpp::Service<ListRoomObjects>::SharedPtr list_objects_service_;
   rclcpp::Service<MoveToObject>::SharedPtr move_to_object_service_;
   rclcpp_action::Client<NavigateToPose>::SharedPtr nav_to_pose_client_;
